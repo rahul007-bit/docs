@@ -1,0 +1,15 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "---Getting Started---",
+    "intro",
+    "---Domains---",
+    "databases",
+    "infra",
+    "networking",
+    "devops",
+    "systems",
+    "incident-response"
+  ],
+  "root": true
+}

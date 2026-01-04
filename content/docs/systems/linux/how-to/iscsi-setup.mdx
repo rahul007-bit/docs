@@ -1,0 +1,785 @@
+---
+title: TrueNAS iSCSI Storage Setup
+description: Configure and mount TrueNAS Block (iSCSI) shares on Linux systems for use as local storage
+---
+
+import { Accordions, Accordion } from 'fumadocs-ui/components/accordion';
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+# TrueNAS Block (iSCSI) Storage Setup Guide
+
+iSCSI provides block-level access to storage over a network, appearing as a local disk on your system. This guide covers configuration on both TrueNAS and various Linux distributions.
+
+---
+
+## Prerequisites
+
+### TrueNAS Requirements
+
+- TrueNAS CORE or SCALE installed and accessible
+- Administrative access to TrueNAS Web UI
+- Available storage pool for creating ZVOLs
+- Network connectivity between client and TrueNAS server
+
+### Client System Requirements
+
+- Linux distribution (Arch, Ubuntu, Debian, RHEL/CentOS, Fedora)
+- Root/sudo access
+- Network connectivity to TrueNAS server (port 3260 for iSCSI)
+
+---
+
+## Part 1: TrueNAS Configuration
+
+<Accordions>
+<Accordion title="Step 1: Create a ZVOL (Virtual Block Device)">
+
+1. Navigate to **Storage** (or **Datasets** in SCALE)
+2. Select your pool and click **Add ZVOL**
+3. Configure:
+   - **Name**: `block-storage` (or your preferred name)
+   - **Size**: Enter desired size (e.g., `100 GiB`)
+   - **Block Size**: `16K` (recommended for general use)
+   - **Compression**: `lz4` (recommended)
+   - **Deduplication**: `Off` (unless you have specific requirements)
+4. Click **Save**
+
+</Accordion>
+
+<Accordion title="Step 2: Create iSCSI Portal">
+
+1. Go to **Shares** → **Block (iSCSI) Shares Targets**
+2. Click the **Portals** tab
+3. Click **Add**
+4. Configure:
+   - **Description**: `Main Portal`
+   - **Discovery Authentication Method**: `None` (for testing; use CHAP in production)
+   - **IP Address**: Select `0.0.0.0` (listen on all interfaces) or your specific NAS IP
+   - **Port**: `3260` (default)
+5. Click **Save**
+
+</Accordion>
+
+<Accordion title="Step 3: Create Initiator Group">
+
+1. Click the **Initiators** tab
+2. Click **Add**
+3. Configure:
+   - **Description**: `Allowed Clients`
+   - **Allow All Initiators**: Check this box (for testing)
+     - *For production*: Uncheck and manually add client IQNs
+4. Click **Save**
+5. **Note the Initiator Group ID** (usually `1`)
+
+</Accordion>
+
+<Accordion title="Step 4: Create Target">
+
+1. Click the **Targets** tab
+2. Click **Add**
+3. Configure:
+   - **Target Name**: `arch-storage` (or descriptive name)
+   - **Portal Group ID**: Select the portal you created (ID `1`)
+   - **Initiator Group ID**: Select the initiator group (ID `1`)
+   - **Authentication Method**: `None`
+4. Click **Save**
+5. **Important**: Note the full target IQN displayed in the Targets list
+   - Format: `iqn.2005-10.org.freenas.ctl:arch-storage`
+   - This will be your `$TARGET_IQN`
+
+</Accordion>
+
+<Accordion title="Step 5: Associate Target with ZVOL">
+
+1. Click the **Associated Targets** tab
+2. Click **Add**
+3. Configure:
+   - **Target**: Select your target (`arch-storage`)
+   - **LUN ID**: `0`
+   - **Extent**: Select your ZVOL (`zvol/pool-name/block-storage`)
+4. Click **Save**
+
+</Accordion>
+
+<Accordion title="Step 6: Enable iSCSI Service">
+
+1. Go to **System Settings** → **Services**
+2. Find **iSCSI** service
+3. Toggle it **ON**
+4. Click the **Configure** icon and enable **Start Automatically**
+
+</Accordion>
+</Accordions>
+
+### Finding Your Configuration Values
+
+After completing the above steps, gather these values:
+
+| Variable | Where to Find |
+|----------|---------------|
+| `$TRUENAS_IP` | TrueNAS Web UI URL (e.g., `192.168.1.57`) or System Settings → General |
+| `$TARGET_IQN` | Shares → Block (iSCSI) → Targets tab → "Name/Alias" column |
+| `$PORTAL_IP` | Usually same as `$TRUENAS_IP`. Found in Portals tab → IP Address column |
+
+## Step 7: Export Environment Variables
+```bash
+export TRUENAS_IP="<Your TrueNAS IP>"
+export TARGET_IQN="<Your Target IQN>"
+export PORTAL_IP="$TRUENAS_IP"
+```
+---
+
+## Part 2: Client Configuration
+
+<Tabs items={['Arch Linux', 'Ubuntu / Debian', 'RHEL / CentOS', 'Fedora']}>
+
+<Tab value="Arch Linux">
+
+#### Install iSCSI Tools
+
+```bash
+sudo pacman -S open-iscsi
+```
+
+#### Configure Initiator Name
+
+Generate a unique identifier for your system:
+
+```bash
+echo "InitiatorName=$(iscsi-iname)" | sudo tee /etc/iscsi/initiatorname.iscsi
+```
+
+#### Start iSCSI Service
+
+```bash
+sudo systemctl enable --now iscsid
+sudo systemctl enable --now iscsi
+```
+
+#### Discover Targets
+
+Replace `$TRUENAS_IP` with your TrueNAS IP (e.g., `192.168.1.57`):
+
+```bash
+sudo iscsiadm -m discovery -t st -p $TRUENAS_IP
+```
+
+Expected output:
+
+```
+192.168.1.57:3260,1 iqn.2005-10.org.freenas.ctl:arch-storage
+```
+
+The output shows your `$TARGET_IQN` - copy it for the next step.
+
+#### Login to Target
+
+Replace `$TARGET_IQN` with the IQN from discovery output:
+
+```bash
+sudo iscsiadm -m node -T $TARGET_IQN -p $TRUENAS_IP --login
+```
+
+Example:
+
+```bash
+sudo iscsiadm -m node -T iqn.2005-10.org.freenas.ctl:arch-storage -p 192.168.1.57 --login
+```
+
+#### Verify Connection
+
+```bash
+lsblk
+```
+
+You should see a new disk (e.g., `/dev/sdb`) matching your ZVOL size.
+
+To find which device is your iSCSI disk:
+
+```bash
+ls -l /dev/disk/by-path/ | grep iscsi
+```
+
+</Tab>
+
+<Tab value="Ubuntu / Debian">
+
+#### Install iSCSI Tools
+
+```bash
+sudo apt update
+sudo apt install open-iscsi
+```
+
+#### Configure Initiator Name
+
+```bash
+echo "InitiatorName=$(iscsi-iname)" | sudo tee /etc/iscsi/initiatorname.iscsi
+```
+
+#### Restart Service
+
+```bash
+sudo systemctl restart iscsid open-iscsi
+sudo systemctl enable iscsid open-iscsi
+```
+
+#### Discovery and Login
+
+```bash
+# Discovery
+sudo iscsiadm -m discovery -t st -p $TRUENAS_IP
+
+# Login (use $TARGET_IQN from discovery output)
+sudo iscsiadm -m node -T $TARGET_IQN -p $TRUENAS_IP --login
+```
+
+#### Verify Connection
+
+```bash
+lsblk
+```
+
+</Tab>
+
+<Tab value="RHEL / CentOS">
+
+#### Install iSCSI Utilities
+
+```bash
+sudo dnf install iscsi-initiator-utils
+```
+
+> Use `yum` instead of `dnf` on older versions.
+
+#### Configure Initiator Name
+
+```bash
+echo "InitiatorName=$(iscsi-iname)" | sudo tee /etc/iscsi/initiatorname.iscsi
+```
+
+#### Start Services
+
+```bash
+sudo systemctl enable --now iscsid iscsi
+```
+
+#### Discovery and Login
+
+```bash
+sudo iscsiadm -m discovery -t st -p $TRUENAS_IP
+sudo iscsiadm -m node -T $TARGET_IQN -p $TRUENAS_IP --login
+```
+
+#### Verify Connection
+
+```bash
+lsblk
+```
+
+</Tab>
+
+<Tab value="Fedora">
+
+#### Install iSCSI Tools
+
+```bash
+sudo dnf install iscsi-initiator-utils
+```
+
+#### Configure and Start
+
+```bash
+echo "InitiatorName=$(iscsi-iname)" | sudo tee /etc/iscsi/initiatorname.iscsi
+sudo systemctl enable --now iscsid iscsi
+```
+
+#### Discovery and Login
+
+```bash
+sudo iscsiadm -m discovery -t st -p $TRUENAS_IP
+sudo iscsiadm -m node -T $TARGET_IQN -p $TRUENAS_IP --login
+```
+
+#### Verify Connection
+
+```bash
+lsblk
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Part 3: Formatting and Mounting
+
+### Check Device Name
+
+```bash
+lsblk
+```
+
+Identify your new iSCSI disk (e.g., `/dev/sdb`).
+
+To be certain which device is your iSCSI disk:
+
+```bash
+sudo iscsiadm -m session -P 3 | grep "Attached scsi disk"
+```
+
+This will show output like:
+
+```
+        Attached scsi disk sdb          State: running
+```
+
+Your device is `$DEVICE_NAME` (e.g., `/dev/sdb`)
+
+### Create Filesystem
+
+<Callout type="warn">
+This erases all data on the device!
+</Callout>
+
+```bash
+sudo mkfs.ext4 $DEVICE_NAME
+```
+
+Example:
+
+```bash
+sudo mkfs.ext4 /dev/sdb
+```
+
+*Alternatives*: `mkfs.xfs`, `mkfs.btrfs`
+
+### Create Mount Point
+
+```bash
+sudo mkdir -p /mnt/iscsi_storage
+```
+
+### Mount Manually
+
+```bash
+sudo mount $DEVICE_NAME /mnt/iscsi_storage
+```
+
+Example:
+
+```bash
+sudo mount /dev/sdb /mnt/iscsi_storage
+```
+
+### Verify
+
+```bash
+df -h | grep iscsi
+```
+
+---
+
+## Part 4: Persistent Auto-Mount
+
+<Tabs items={['fstab (Traditional)', 'systemd Mount Unit (Modern)']}>
+
+<Tab value="fstab (Traditional)">
+
+#### Get UUID
+
+```bash
+sudo blkid $DEVICE_NAME
+```
+
+Example output:
+
+```
+/dev/sdb: UUID="86381ffb-2f42-4084-a0c7-89935b3cf7d0" TYPE="ext4"
+```
+
+Copy the UUID value - this is your `$DISK_UUID`
+
+#### Edit fstab
+
+```bash
+sudo nano /etc/fstab
+```
+
+#### Add Entry
+
+```
+UUID=$DISK_UUID  /mnt/iscsi_storage  ext4  defaults,_netdev  0  0
+```
+
+Example:
+
+```
+UUID=86381ffb-2f42-4084-a0c7-89935b3cf7d0  /mnt/iscsi_storage  ext4  defaults,_netdev  0  0
+```
+
+<Callout type="info">
+The `_netdev` option ensures the system waits for the network before mounting.
+</Callout>
+
+#### Test Configuration
+
+```bash
+sudo umount /mnt/iscsi_storage
+sudo mount -a
+```
+
+</Tab>
+
+<Tab value="systemd Mount Unit (Modern)">
+
+#### Create Mount Unit
+
+```bash
+sudo nano /etc/systemd/system/mnt-iscsi_storage.mount
+```
+
+#### Add Configuration
+
+```ini
+[Unit]
+Description=TrueNAS iSCSI Storage
+Requires=network-online.target
+After=network-online.target iscsi.service
+
+[Mount]
+What=/dev/disk/by-uuid/$DISK_UUID
+Where=/mnt/iscsi_storage
+Type=ext4
+Options=defaults,_netdev
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Replace `$DISK_UUID` with your actual UUID from `blkid`.
+
+#### Enable and Start
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mnt-iscsi_storage.mount
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Troubleshooting
+
+<Accordions>
+
+<Accordion title='Discovery Returns "No portals found"'>
+
+**Causes:**
+- iSCSI service not running on TrueNAS
+- Initiator Group not assigned to Target
+- Firewall blocking port 3260
+
+**Solution:**
+1. Check TrueNAS: **Targets** tab → Ensure **Initiator Group ID** is not `-`
+2. Verify service: **System** → **Services** → **iSCSI** is **Running**
+3. Test connectivity:
+
+```bash
+nc -zv $TRUENAS_IP 3260
+```
+
+</Accordion>
+
+<Accordion title='"iscsid is not running"'>
+
+**Solution:**
+
+```bash
+sudo systemctl start iscsid
+sudo systemctl enable iscsid
+```
+
+</Accordion>
+
+<Accordion title="Device Disappears After Reboot">
+
+**Causes:**
+- Auto-login not configured
+- Network not ready before iSCSI service
+
+**Solution (Arch Linux):**
+
+1. Find your node configuration directory:
+
+```bash
+sudo ls /var/lib/iscsi/nodes/
+```
+
+2. Edit the default file:
+
+```bash
+sudo nano /var/lib/iscsi/nodes/$TARGET_IQN/$PORTAL_IP,3260,1/default
+```
+
+Example path:
+
+```
+/var/lib/iscsi/nodes/iqn.2005-10.org.freenas.ctl:arch-storage/192.168.1.57,3260,1/default
+```
+
+3. Change:
+
+```
+node.startup = automatic
+```
+
+4. Enable service:
+
+```bash
+sudo systemctl enable iscsi
+```
+
+</Accordion>
+
+<Accordion title='"No records found" During Login'>
+
+**Cause:** Discovery didn't cache the target information.
+
+**Solution:**
+
+1. Clear old records:
+
+```bash
+sudo iscsiadm -m node -o delete
+```
+
+2. Re-run discovery:
+
+```bash
+sudo iscsiadm -m discovery -t st -p $TRUENAS_IP
+```
+
+3. Try login again:
+
+```bash
+sudo iscsiadm -m node -T $TARGET_IQN -p $TRUENAS_IP --login
+```
+
+</Accordion>
+
+</Accordions>
+
+---
+
+## Security Best Practices
+
+<Accordions>
+
+<Accordion title="Use CHAP Authentication">
+
+#### On TrueNAS:
+
+1. **Authorized Access** tab → Add user/password
+   - Username: `$CHAP_USER` (e.g., `iscsi-user`)
+   - Password: `$CHAP_PASSWORD` (generate strong password)
+2. **Portal** → Set **Discovery Auth** to **CHAP**
+3. **Target** → Set **Auth Method** to **CHAP**
+
+#### On Client:
+
+Edit `/etc/iscsi/iscsid.conf`:
+
+```bash
+sudo nano /etc/iscsi/iscsid.conf
+```
+
+Add/modify these lines:
+
+```ini
+node.session.auth.authmethod = CHAP
+node.session.auth.username = $CHAP_USER
+node.session.auth.password = $CHAP_PASSWORD
+```
+
+Example:
+
+```ini
+node.session.auth.authmethod = CHAP
+node.session.auth.username = iscsi-user
+node.session.auth.password = MySecurePassword123
+```
+
+Restart service:
+
+```bash
+sudo systemctl restart iscsid
+```
+
+</Accordion>
+
+<Accordion title="Restrict Initiators">
+
+To find your client's IQN (for whitelist):
+
+```bash
+cat /etc/iscsi/initiatorname.iscsi
+```
+
+Output example:
+
+```
+InitiatorName=iqn.2026-01.arch:archlinux
+```
+
+This is your `$CLIENT_IQN`
+
+In TrueNAS:
+1. **Initiators** tab → Edit your initiator group
+2. Uncheck **Allow All Initiators**
+3. Click **Add** under "Allowed Initiators"
+4. Paste your `$CLIENT_IQN`
+5. Save
+
+</Accordion>
+
+<Accordion title="Dedicated Network">
+
+Use a separate VLAN or physical network for iSCSI traffic to prevent interference and improve security.
+
+</Accordion>
+
+</Accordions>
+
+---
+
+## Maintenance Commands
+
+### View Active Sessions
+
+```bash
+sudo iscsiadm -m session -P 3
+```
+
+This shows:
+- Target IQN (`$TARGET_IQN`)
+- Portal IP (`$PORTAL_IP`)
+- Attached disk (`$DEVICE_NAME`)
+
+### Logout from Target
+
+```bash
+sudo iscsiadm -m node -T $TARGET_IQN -p $TRUENAS_IP --logout
+```
+
+### Delete Cached Target
+
+```bash
+sudo iscsiadm -m node -o delete -T $TARGET_IQN
+```
+
+### Rescan for New LUNs
+
+If you expand the ZVOL size on TrueNAS:
+
+```bash
+sudo iscsiadm -m session --rescan
+```
+
+Then resize the filesystem:
+
+```bash
+# For ext4:
+sudo resize2fs $DEVICE_NAME
+
+# For XFS:
+sudo xfs_growfs /mnt/iscsi_storage
+```
+
+---
+
+## Performance Tuning
+
+### Increase Queue Depth
+
+Edit `/etc/iscsi/iscsid.conf`:
+
+```bash
+sudo nano /etc/iscsi/iscsid.conf
+```
+
+Add or modify:
+
+```ini
+node.session.queue_depth = 128
+```
+
+Restart:
+
+```bash
+sudo systemctl restart iscsid
+```
+
+### Enable Multipath (Advanced)
+
+For redundant connections using multiple NICs, configure `multipath-tools`.
+
+---
+
+## Quick Reference: Environment Variables
+
+Throughout this guide, these placeholders are used:
+
+| Variable | Description | How to Find |
+|----------|-------------|-------------|
+| `$TRUENAS_IP` | TrueNAS server IP | TrueNAS Web UI URL or System Settings → General |
+| `$TARGET_IQN` | Full iSCSI target identifier | Shares → Block (iSCSI) → Targets tab |
+| `$PORTAL_IP` | iSCSI portal IP | Shares → Block (iSCSI) → Portals tab |
+| `$DEVICE_NAME` | Linux block device path | Run `lsblk` or `sudo iscsiadm -m session -P 3` |
+| `$DISK_UUID` | Filesystem UUID | Run `sudo blkid $DEVICE_NAME` |
+| `$CLIENT_IQN` | Client's iSCSI identifier | Run `cat /etc/iscsi/initiatorname.iscsi` |
+| `$CHAP_USER` | CHAP username | Set in TrueNAS → Authorized Access |
+| `$CHAP_PASSWORD` | CHAP password | Set in TrueNAS → Authorized Access |
+
+---
+
+## Complete Example Workflow
+
+```bash
+# 1. On TrueNAS: Create ZVOL, Portal, Initiator, Target, Associate
+#    Note down: $TARGET_IQN = iqn.2005-10.org.freenas.ctl:arch-storage
+
+# 2. On Arch Linux client:
+sudo pacman -S open-iscsi
+echo "InitiatorName=$(iscsi-iname)" | sudo tee /etc/iscsi/initiatorname.iscsi
+sudo systemctl enable --now iscsid iscsi
+
+# 3. Discover and connect:
+sudo iscsiadm -m discovery -t st -p 192.168.1.57
+# Output: 192.168.1.57:3260,1 iqn.2005-10.org.freenas.ctl:arch-storage
+
+sudo iscsiadm -m node -T iqn.2005-10.org.freenas.ctl:arch-storage -p 192.168.1.57 --login
+
+# 4. Format and mount:
+lsblk
+# Note: New disk is /dev/sdb
+sudo mkfs.ext4 /dev/sdb
+sudo mkdir -p /mnt/iscsi_storage
+sudo mount /dev/sdb /mnt/iscsi_storage
+
+# 5. Make persistent:
+sudo blkid /dev/sdb
+# Output: UUID="86381ffb-2f42-4084-a0c7-89935b3cf7d0"
+
+echo "UUID=86381ffb-2f42-4084-a0c7-89935b3cf7d0  /mnt/iscsi_storage  ext4  defaults,_netdev  0  0" | sudo tee -a /etc/fstab
+
+# 6. Test:
+sudo umount /mnt/iscsi_storage
+sudo mount -a
+df -h | grep iscsi
+```

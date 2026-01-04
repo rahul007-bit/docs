@@ -1,0 +1,52 @@
+# Images Directory
+
+This directory contains all static images for the documentation.
+
+## Structure
+
+The directory structure mirrors the documentation hierarchy:
+
+```
+public/images/
+├── databases/
+│   ├── kafka/
+│   ├── mysql/
+│   ├── postgres/
+│   └── redis/
+├── devops/
+│   ├── ci-cd/
+│   └── jenkins/
+├── infra/
+│   ├── kubernetes/
+│   └── storage/
+│       ├── csi-drivers/
+│       └── nfs/
+├── networking/
+│   ├── dns/
+│   └── ingress-lb/
+└── incident-response/
+```
+
+## Usage in MDX
+
+Reference images using absolute paths:
+
+```mdx
+![Description](/images/category/subcategory/image-name.png)
+```
+
+Example:
+```mdx
+![TrueNAS Portal](/images/infra/kubernetes/truenas-portal.png)
+```
+
+Or with Next.js Image component for optimization:
+```mdx
+import Image from 'next/image'
+
+<Image 
+  src="/images/infra/kubernetes/truenas-portal.png" 
+  alt="TrueNAS Portal"
+  width={800}
+  height={600}
+/>

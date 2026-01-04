@@ -1,0 +1,201 @@
+---
+title: TrueNAS Scale iSCSI Storage Class
+description: Setting up High-Performance Block Storage on Kubernetes using TrueNAS Scale 25.10+ and democratic-csi.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+This guide details how to configure TrueNAS Scale (specifically version **25.10** and newer) as a dynamic block storage provider for Kubernetes.
+
+## Prerequisites
+
+* **TrueNAS Scale 25.10+** installed and accessible.
+* **Kubernetes Cluster** (1.25+).
+* **Helm** installed on your jump host.
+* **iSCSI Tools** installed on all Kubernetes worker nodes.
+
+<Callout type="warn" title="Critical Requirement">
+  Block storage requires `open-iscsi` (Ubuntu/Debian) or `iscsi-initiator-utils` (RHEL/CentOS) to be installed and running on **every worker node**.
+  
+  ```bash tab="Ubuntu / Debian"
+  # Ubuntu/Debian
+  sudo apt install open-iscsi -y && sudo systemctl enable --now iscsid
+  ```
+  ```bash tab="RHEL / CentOS / Rocky"
+  # RHEL/CentOS/Rocky
+  sudo dnf install iscsi-initiator-utils -y && sudo systemctl enable --now iscsid
+
+```
+
+</Callout>
+
+## Step 1: TrueNAS Preparation
+
+Before configuring Kubernetes, prepare the TrueNAS environment.
+
+<Steps>
+
+### Create the ZFS Datasets
+
+Create parent datasets for your volumes and snapshots.
+
+* `pool/` 
+
+### Generate an API Key
+
+Go to **Settings (Gear Icon) -> API Keys** and generate a new key named `k8s-csi`. Save this key immediately.
+
+### Configure iSCSI Services
+
+1. **Sharing -> iSCSI -> Portals**: ensure a portal exists (Note the **ID**, usually `1`).
+2. **Sharing -> iSCSI -> Initiators Groups**: Ensure a group exists that allows your cluster nodes (Note the **ID**).
+* *Tip: If you use "Allow All", verify the ID in the URL or Columns view. It is often not 1.*
+
+
+
+</Steps>
+
+## Step 2: The "Golden" Values File
+
+Create a file named `freenas-iscsi.yaml`.
+
+<Callout type="info" title="TrueNAS 25.10 Fixes Included">
+This configuration addresses three critical issues found in modern TrueNAS setups:
+
+1. **Driver:** Uses `freenas-api-iscsi` instead of SSH/ZFS driver (avoids LIO database conflicts).
+2. **Image Tag:** Forces `image: next` to fix the "TrueNAS 25.10" version string crash.
+3. **Char Limit:** Shortens `namePrefix` to avoid the 64-character limit error.
+</Callout>
+
+```yaml title="freenas-iscsi.yaml"
+csiDriver:
+  name: "org.democratic-csi.iscsi"
+
+driver:
+  config:
+    # 1. Use the API Driver (Stability for Scale)
+    driver: freenas-api-iscsi
+    
+    # 2. Connection Details
+    httpConnection:
+      protocol: http
+      host: 192.168.1.57
+      port: 80
+      apiKey: "YOUR_API_KEY_HERE"
+      allowInsecure: true
+
+    # 3. ZFS Configuration
+    zfs:
+      datasetParentName: nfs/k8s/vols
+      detachedSnapshotsDatasetParentName: nfs/k8s/snaps
+      zvolCompression: lz4
+      zvolDedup: off
+      zvolEnableReservation: false
+      zvolBlocksize: 16K
+
+    # 4. iSCSI Configuration
+    iscsi:
+      targetPortal: "192.168.1.57:3260"
+      # Short prefix to prevent "extent name cannot exceed 64 characters" error
+      namePrefix: "iqn.k8s:"
+      nameSuffix: "cluster"
+      
+      # MAP THESE IDS CORRECTLY FROM TRUENAS UI
+      targetGroups:
+        - targetGroupPortalGroup: 1    # Check Portal ID in UI
+          targetGroupInitiatorGroup: 3 # Check Initiator Group ID in UI
+          targetGroupAuthType: None
+          
+      extentInsecureTpc: true
+      xenInitiatorCompat: false
+      disableAlua: false
+
+storageClasses:
+- name: truenas-iscsi-csi
+  defaultClass: false
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+  allowVolumeExpansion: true
+  parameters:
+    fsType: ext4
+
+# CRITICAL: Force 'next' tag for TrueNAS 25.10+ support
+controller:
+  driver:
+    image:
+      tag: next
+
+node:
+  driver:
+    image:
+      tag: next
+
+```
+
+## Step 3: Deployment
+
+Install the driver using the official Helm chart.
+
+```bash
+# Add repo
+helm repo add democratic-csi [https://democratic-csi.github.io/charts/](https://democratic-csi.github.io/charts/)
+helm repo update
+
+# Install
+helm upgrade --install --create-namespace \
+  --namespace democratic-csi \
+  zfs-iscsi democratic-csi/democratic-csi \
+  -f freenas-iscsi.yaml
+
+```
+
+## Step 4: Verification
+
+Deploy a test pod to verify the complete chain (Provisioning -> Attachment -> Formatting -> Mounting).
+
+```yaml title="test-pvc.yaml"
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: iscsi-test-pvc
+spec:
+  storageClassName: truenas-iscsi-csi
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: iscsi-test-pod
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - mountPath: "/data"
+      name: iscsi-storage
+  volumes:
+  - name: iscsi-storage
+    persistentVolumeClaim:
+      claimName: iscsi-test-pvc
+
+```
+
+```bash
+kubectl apply -f test-pvc.yaml
+kubectl get po -w
+
+```
+
+## Troubleshooting Guide
+
+| Error Message | Cause | Solution |
+| --- | --- | --- |
+| `driver is only availalbe with TrueNAS SCALE` | The driver does not recognize the `TrueNAS-25.10` version string. | Ensure `image.tag: next` is set in both `controller` and `node` sections. |
+| `extent name cannot exceed 64 characters` | The generated iSCSI target name is too long. | Shorten `driver.config.iscsi.namePrefix` (e.g., to `iqn.k8s:`). |
+| `Initiator not found in database` | The ID in `targetGroupInitiatorGroup` does not match TrueNAS. | Check the ID column in TrueNAS -> Sharing -> iSCSI -> Initiators. |
+| Pod hangs at `ContainerCreating` | Usually network or missing iscsi tools. | Verify `iscsiadm` is installed on the worker node and port 3260 is open. |

@@ -1,0 +1,180 @@
+---
+title: How to Use This Docs
+description: A guide for contributors on how to navigate, create, and organize documentation
+---
+
+# How to Use This Documentation
+
+Welcome! This guide will help you understand how this documentation site is structured and how to contribute your own docs.
+
+## Documentation Philosophy
+
+We follow the **Diátaxis framework** with four distinct documentation types:
+
+| Type | Purpose | When to Use |
+|------|---------|-------------|
+| **Runbooks** | Step-by-step incident response | Emergency procedures, on-call scenarios |
+| **How-To** | Task-oriented guides | Routine operations, setup tasks |
+| **Reference** | Configuration & architecture | Looking up settings, commands, architecture |
+| **Troubleshooting** | Symptom → diagnosis → fix | Debugging issues, root cause analysis |
+
+## Folder Structure
+
+```
+content/docs/
+├── databases/           # Database systems
+│   ├── postgres/
+│   ├── mysql/
+│   ├── redis/
+│   └── kafka/
+├── infra/               # Infrastructure
+│   ├── kubernetes/
+│   └── storage/
+├── networking/          # Network services
+│   ├── dns/
+│   └── ingress-lb/
+├── devops/              # DevOps tooling
+│   ├── jenkins/
+│   └── ci-cd/
+├── systems/             # System administration
+│   └── linux/
+└── incident-response/   # Incident templates
+```
+
+Each technology folder contains:
+- `runbooks/` — Emergency procedures
+- `how-to/` — Task guides
+- `reference/` — Config & architecture docs
+- `troubleshooting/` — Problem diagnosis guides
+
+## Where Should I Put My Doc?
+
+Use this decision tree:
+
+```
+Is this for an emergency/incident?
+├── Yes → runbooks/
+└── No
+    ├── Is this a step-by-step task guide?
+    │   └── Yes → how-to/
+    └── No
+        ├── Is this configuration/architecture/commands reference?
+        │   └── Yes → reference/
+        └── No
+            └── Is this about diagnosing/fixing a problem?
+                └── Yes → troubleshooting/
+```
+
+### Examples
+
+| Document | Location |
+|----------|----------|
+| How to restore PostgreSQL from backup during outage | `databases/postgres/runbooks/` |
+| Setting up a new Kubernetes cluster | `infra/kubernetes/how-to/` |
+| PostgreSQL tuning parameters reference | `databases/postgres/reference/` |
+| Debugging high CPU on Linux servers | `systems/linux/troubleshooting/` |
+| Jenkins pipeline Groovy snippets | `devops/jenkins/reference/` |
+| Fixing Kafka consumer lag | `databases/kafka/troubleshooting/` |
+
+## Creating a New Document
+
+### 1. Create the MDX file
+
+Create a new `.mdx` file in the appropriate folder:
+
+```bash
+# Example: Creating a PostgreSQL backup runbook
+touch content/docs/databases/postgres/runbooks/restore-from-backup.mdx
+```
+
+### 2. Add frontmatter
+
+Every document needs frontmatter at the top:
+
+```mdx
+---
+title: Restore PostgreSQL from Backup
+description: Step-by-step guide for PITR and pg_restore procedures
+---
+
+# Restore PostgreSQL from Backup
+
+Your content here...
+```
+
+### 3. Use consistent structure
+
+**For Runbooks:**
+```mdx
+## Prerequisites
+## Procedure
+## Validation
+## Rollback
+```
+
+**For How-To:**
+```mdx
+## Overview
+## Prerequisites
+## Steps
+## Verification
+```
+
+**For Troubleshooting:**
+```mdx
+## Symptoms
+## Diagnosis
+## Resolution
+## Prevention
+```
+
+**For Reference:**
+```mdx
+## Overview
+## Configuration Options
+## Examples
+## Related
+```
+
+## Adding a New Technology
+
+If you need to document a new technology:
+
+1. Create the folder structure:
+```bash
+mkdir -p content/docs/databases/newdb/{runbooks,how-to,reference,troubleshooting}
+```
+
+2. Add `index.mdx` for landing page:
+```mdx
+---
+title: NewDB
+description: NewDB administration and operations
+---
+
+# NewDB
+
+NewDB documentation overview...
+```
+
+3. Add `meta.json` for navigation:
+```json
+{
+  "title": "NewDB",
+  "pages": ["runbooks", "how-to", "reference", "troubleshooting"]
+}
+```
+
+4. Update the parent `meta.json` to include the new folder
+
+## Writing Tips
+
+- **Be specific** — Include actual commands, not just descriptions
+- **Show examples** — Real config snippets, real queries
+- **Link related docs** — Cross-reference between runbooks and reference
+- **Keep it current** — Update docs when procedures change
+- **Test your steps** — Verify procedures actually work
+
+## Questions?
+
+If you're unsure where to place documentation or need a new section, open an issue or discuss with the team.
