@@ -1,45 +1,77 @@
-# docs
+# Ops Docs
 
-This is a Next.js application generated with
-[Create Fumadocs](https://github.com/fuma-nama/fumadocs).
+Internal operations documentation covering databases, infrastructure, networking, DevOps, systems administration, and incident response.
 
-Run development server:
+Built with [Fumadocs](https://fumadocs.dev) and [Next.js](https://nextjs.org).
+
+## Getting Started
 
 ```bash
-npm run dev
-# or
-pnpm dev
-# or
-yarn dev
+# Install dependencies
+bun install
+
+# Run development server
+bun dev
 ```
 
-Open http://localhost:3000 with your browser to see the result.
+Open http://localhost:3000 to view the docs.
 
-## Explore
+## Documentation Structure
 
-In the project, you can see:
+```
+content/docs/
+├── databases/          # PostgreSQL, MySQL, Redis, Kafka
+├── infra/              # Kubernetes, Storage
+├── networking/         # DNS, Ingress, Load Balancers
+├── devops/             # Jenkins, CI/CD
+├── systems/            # Linux administration
+└── incident-response/  # Runbooks, post-mortems
+```
 
-- `lib/source.ts`: Code for content source adapter, [`loader()`](https://fumadocs.dev/docs/headless/source-api) provides the interface to access your content.
-- `lib/layout.shared.tsx`: Shared options for layouts, optional but preferred to keep.
+Each section contains:
+- **runbooks/** - Step-by-step operational procedures
+- **how-to/** - Task-oriented guides
+- **reference/** - Configuration and command references
+- **troubleshooting/** - Common issues and solutions
 
-| Route                     | Description                                            |
-| ------------------------- | ------------------------------------------------------ |
-| `app/(home)`              | The route group for your landing page and other pages. |
-| `app/docs`                | The documentation layout and pages.                    |
-| `app/api/search/route.ts` | The Route Handler for search.                          |
+## Features
 
-### Fumadocs MDX
+- 🎨 **Theme Selector** - 5 color themes (Ocean, Purple, Neutral, Catppuccin, Vitepress)
+- 📋 **Copy Markdown** - Copy page content as markdown
+- 🔍 **Full-text Search** - Search across all documentation
+- 📱 **Responsive** - Works on desktop and mobile
 
-A `source.config.ts` config file has been included, you can customise different options like frontmatter schema.
+## Adding Documentation
 
-Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
+1. Create an `.mdx` file in the appropriate `content/docs/` folder
+2. Add frontmatter with `title` and `description`
+3. Update the section's `meta.json` if needed
+
+Example:
+
+```mdx
+---
+title: My Guide
+description: A helpful guide
+---
+
+# My Guide
+
+Content goes here...
+```
+
+## Project Structure
+
+| Path | Description |
+|------|-------------|
+| `app/(home)` | Landing page |
+| `app/docs` | Documentation layout and pages |
+| `content/docs` | MDX documentation files |
+| `components/` | Custom React components |
+| `lib/source.ts` | Content source configuration |
 
 ## Learn More
 
-To learn more about Next.js and Fumadocs, take a look at the following
-resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js
-  features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [Fumadocs](https://fumadocs.dev) - learn about Fumadocs
+- [Fumadocs Documentation](https://fumadocs.dev)
+- [Next.js Documentation](https://nextjs.org/docs)
+- [MDX Documentation](https://mdxjs.com)
