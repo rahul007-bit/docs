@@ -26,8 +26,11 @@ export default function Layout({ children }: LayoutProps<'/'>) {
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="flex flex-col min-h-screen">
-        <RootProvider>{children}</RootProvider>
-        <SpeedInsights />
+        <RootProvider>{children}
+
+          <SpeedInsights />
+        </RootProvider>
+        
       </body>
     </html>
   );
