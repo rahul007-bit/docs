@@ -1,0 +1,174 @@
+---
+title: CNPG Validation & Backups
+description: Stress testing the cluster and configuring S3 backups for disaster recovery.
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# Load Testing & Validation
+
+Before going to production, we validated the cluster's performance and failover capabilities using `pgbench` and custom chaos testing scripts.
+
+## Performance Benchmarking (pgbench)
+
+We used `pgbench` to simulate high-concurrency traffic.
+
+<Callout type="warn" title="The Scale Factor">
+Standard benchmarks often fail due to row-locking contention on small datasets. We used **Scale Factor 50** (~5 million rows) to simulate a realistic production dataset.
+</Callout>
+
+<Steps>
+  <Step>
+    ### Initialize the Dataset
+    We deploy a dedicated pod to run the benchmarks, isolating test resources from the database itself.
+    
+    ```bash
+    # Initialize with 5 million rows
+    pgbench -i -s 50 --foreign-keys -h pooler-rw.demo.svc -U app app
+    ```
+  </Step>
+
+  <Step>
+    ### Read-Write Test (Throughput)
+    Targeting the **Read-Write Pooler** to test Primary node performance.
+    
+    ```bash
+    # 20 concurrent clients, 5 minutes duration
+    pgbench -c 20 -j 2 -T 300 -h pooler-rw.demo.svc -U app app
+    ```
+    **Result:** ~750 TPS with < 50ms latency.
+  </Step>
+
+  <Step>
+    ### Read-Only Test (Load Balancing)
+    Targeting the **Read-Only Pooler** to verify traffic is balanced across replicas.
+    
+    ```bash
+    # Select-only mode (-S)
+    pgbench -S -c 50 -j 4 -T 300 -h pooler-ro.demo.svc -U app app
+    ```
+    **Result:** ~8,000 TPS. This confirms that heavy read traffic is successfully offloaded from the Primary.
+  </Step>
+</Steps>
+
+## Chaos Testing (Failover Resilience)
+
+To verify Zero-Downtime capabilities, we simulated a hard crash of the Primary node while traffic was flowing.
+
+**The Test:**
+1.  Run a continuous Python load generator (failover-aware).
+2.  Delete the Primary Pod: `kubectl delete pod postgres14-cluster-1 --now`.
+3.  Observe behavior.
+
+**The Results:**
+* **Write Traffic:** Stalled for ~15 seconds (Leader Election time) then resumed automatically.
+* **Read Traffic:** No downtime observed. The `hot_standby_feedback: on` setting prevented replication conflicts.
+
+---
+
+# Backup & Disaster Recovery
+
+We utilize **Barman Cloud** (integrated into CNPG) to stream WAL files and take periodic base backups to AWS S3.
+
+## Configuration
+
+<Steps>
+  <Step>
+    ### Create S3 Credentials
+    Create a Kubernetes Secret containing your AWS Access Key and Secret Key.
+
+    ```bash title="Terminal"
+    kubectl create secret generic aws-creds -n demo \
+      --from-literal=ACCESS_KEY_ID=your_access_key \
+      --from-literal=ACCESS_SECRET_KEY="your_secret_key"
+    ```
+  </Step>
+
+  <Step>
+    ### Configure Object Storage
+    Define where the backups will be stored. This resource tells CNPG which S3 bucket and path to use.
+
+    ```yaml title="object-storage.yaml"
+    apiVersion: barmancloud.cnpg.io/v1
+    kind: ObjectStore
+    metadata:
+      name: backup-object-store
+      namespace: demo
+    spec:
+      configuration:
+        destinationPath: s3://eks-backup-cluster1/cnpg/
+        s3Credentials:
+          accessKeyId:
+            name: aws-creds
+            key: ACCESS_KEY_ID
+          secretAccessKey:
+            name: aws-creds
+            key: ACCESS_SECRET_KEY
+        wal:
+          compression: gzip
+    ```
+  </Step>
+<Step>
+    ### Enable Continuous Archiving (WAL)
+    Update your main **Cluster YAML** to include the `plugins` section. This connects the database to the ObjectStore and enables the continuous stream of WAL files (Point-In-Time Recovery).
+
+    ```yaml title="postgres14-cluster.yaml"
+    apiVersion: postgresql.cnpg.io/v1
+    kind: Cluster
+    metadata:
+      name: postgres14-cluster
+    spec:
+      # ... existing spec ...
+      
+      plugins:
+      - name: barman-cloud.cloudnative-pg.io
+        # Enables continuous streaming of WAL files to S3
+        isWALArchiver: true
+        parameters:
+          # Link to the ObjectStore resource defined above
+          barmanObjectName: backup-object-store
+          # How long to keep backups (Point-in-Time Recovery window)
+          retentionPolicy: 30d
+    ```
+  </Step>
+  <Step>
+    ### Schedule Daily Backups
+    We configure a backup policy to run daily at midnight. The `immediate: true` flag ensures we get a baseline backup right away.
+
+    ```yaml title="schedule-backup.yaml"
+    apiVersion: postgresql.cnpg.io/v1
+    kind: ScheduledBackup
+    metadata:
+      name: postgres14-daily-backup
+      namespace: demo
+    spec:
+      schedule: "0 0 0 * * *" # Daily at Midnight
+      immediate: true
+      backupOwnerReference: self
+      cluster:
+        name: postgres14-cluster
+      method: plugin
+      pluginConfiguration:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          # Link to the ObjectStore we defined above
+          serverName: "postgres14-cluster"
+          objectStoreName: "backup-object-store"
+    ```
+  </Step>
+</Steps>
+
+## Verify Backups
+
+Check the status of your cluster to ensure WAL archiving is active and backups are succeeding.
+
+```bash
+kubectl cnpg status postgres14-cluster
+
+```
+
+**Look for:**
+
+* `Continuous Backup status`: Should show "Configured" or "Working".
+* `Backup status`: Should list your completed backup with a timestamp.

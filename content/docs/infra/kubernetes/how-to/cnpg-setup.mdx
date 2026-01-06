@@ -1,0 +1,286 @@
+---
+title: PostgreSQL Cluster Setup
+description: Complete guide to installing, configuring, and tuning CloudNativePG with PgBouncer.
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+# PostgreSQL Cluster Setup
+
+This guide details the process of deploying a production-ready PostgreSQL cluster using CloudNativePG (CNPG) on Kubernetes. It covers installation, cluster configuration, parameter tuning for resilience, and setting up connection poolers.
+
+<Callout title="Prerequisites" type="info">
+  Ensure you have `kubectl` configured with access to your Kubernetes cluster and that you are using a namespace (e.g., `demo`) for these resources.
+</Callout>
+
+## Installation
+
+We start by installing the core CNPG operator and the Barman Cloud plugin required for S3 backups.
+
+<Steps>
+  <Step>
+    ### Install the CNPG Operator
+    Apply the manifest for version 1.28.0. We use server-side apply to handle the CRD definitions correctly.
+
+    ```bash title="Terminal"
+    kubectl apply --server-side -f \
+      https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.28/releases/cnpg-1.28.0.yaml
+    ```
+  </Step>
+  
+  <Step>
+    ### Install Barman Cloud Plugin
+    This plugin is essential for integrating object storage (S3) backups later.
+
+    ```bash title="Terminal"
+    kubectl apply -f \
+      https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.10.0/manifest.yaml
+    ```
+  </Step>
+
+  <Step>
+    ### Verify Installation
+    Check that both the controller and the barman sidecar are running in the `cnpg-system` namespace.
+
+    ```bash title="Terminal"
+    kubectl get po -n cnpg-system
+    ```
+    
+    **Expected Output:**
+    ```text
+    NAME                                      READY   STATUS    RESTARTS   AGE
+    barman-cloud-c7b9865b-cz6lq               1/1     Running   0          2d17h
+    cnpg-controller-manager-bff9dcbd6-8bqvf   1/1     Running   0          2d17h
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Cluster Configuration
+
+We will deploy a 3-node PostgreSQL 14 cluster. This setup progresses from a basic definition to a highly tuned configuration.
+
+### 1. Basic Cluster Definition
+The initial configuration defines the image, storage size, and number of instances.
+
+```yaml title="postgres14-cluster.yaml"
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres14-cluster
+  namespace: demo
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:14
+  
+  # Enable Prometheus monitoring
+  monitoring:
+    enablePodMonitor: true
+    
+  # Storage Configuration
+  storage:
+    size: 2Gi
+  walStorage:
+    size: 1Gi
+
+```
+
+### 2. Tuning Parameters (Performance & Resilience)
+
+To handle high concurrency and ensure zero-downtime failovers, we apply specific PostgreSQL parameters.
+
+Update the `spec.postgresql.parameters` section of your YAML to include the following settings.
+
+```yaml title="postgres14-cluster-tuned.yaml"
+spec:
+  postgresql:
+    parameters:
+      # --- Performance & Monitoring ---
+      max_connections: "200"              # Increased to support Pooler connections
+      pg_stat_statements.max: "10000"     # Track more queries in statistics
+      pg_stat_statements.track: "all"     # Track nested statements too
+
+      # --- Resilience & Failover ---
+      # Prevents "Conflict with Recovery" errors on read-replicas during heavy writes
+      hot_standby_feedback: "on"
+      
+      # Gives replicas more time to handle long-running queries before cancelling them
+      max_standby_streaming_delay: "60s"
+      max_standby_archive_delay: "60s"
+
+```
+
+<Callout type="warn" title="Why these parameters matter?">
+Without `hot_standby_feedback`, heavy write traffic on the Primary node can cause read-only queries on Replicas to fail with *`ERROR: canceling statement due to conflict with recovery`*.
+</Callout>
+
+---
+
+## Connection Pooling (PgBouncer)
+
+To efficiently manage connections and implement **Read/Write splitting**, we deploy two separate PgBouncer pools: one for writing (Primary) and one for reading (Replicas).
+
+### Deploy Read-Write Pooler
+
+This pooler forwards traffic **only** to the Primary node.
+
+```yaml title="pooler-rw.yaml"
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pooler-rw
+  namespace: demo
+spec:
+  cluster:
+    name: postgres14-cluster 
+  instances: 2                # High Availability for the pooler itself
+  type: rw                    # Points to Primary
+  pgbouncer:
+    poolMode: transaction     # Efficient for high TPS
+    parameters:
+      max_client_conn: "1000" # Accepts 1000 app connections
+      default_pool_size: "20" # Queues them into 20 DB connections
+
+```
+### Deploy Read-Only Pooler
+
+This pooler balances traffic across **all** replicas, offloading reporting/read queries from the Primary.
+
+```yaml title="pooler-ro.yaml"
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pooler-ro
+  namespace: demo
+spec:
+  cluster:
+    name: postgres14-cluster
+  instances: 2
+  type: ro                    # Points to Replicas
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "20"
+
+```
+
+<Callout title="Verification">
+Once applied, you will have two new services: `pooler-rw` and `pooler-ro`.
+
+* Point your **Application Writers** to `pooler-rw.demo.svc`.
+* Point your **BI/Reporting Tools** to `pooler-ro.demo.svc`.
+</Callout>
+
+
+---
+
+## Configuration Management
+
+You asked how to set specific PostgreSQL values like `max_connections` or `work_mem`. In CNPG, you do not edit `postgresql.conf` directly. Instead, you define them in the `Cluster` YAML.
+
+### Applying Configuration Changes
+Any change to the `postgresql.parameters` section is handled automatically by the operator.
+
+* **Dynamic Parameters:** (e.g., `maintenance_work_mem`) are applied immediately without restarting pods.
+* **Static Parameters:** (e.g., `max_connections`, `shared_buffers`) require a restart. The CNPG operator performs a **Rolling Update** (restarting replicas first, then the primary) to ensure zero downtime.
+
+To apply changes, simply edit your local YAML file and run:
+
+```bash
+kubectl apply -f postgres14-cluster.yaml
+
+```
+
+You can watch the rolling update progress:
+
+```bash
+kubectl cnpg status postgres14-cluster --watch
+
+```
+
+---
+
+## Monitoring & Observability
+
+We use the **Prometheus Operator** stack to scrape metrics from the CNPG cluster. This setup allows us to visualize TPS, latency, and resource usage in Grafana.
+
+<Steps>
+<Step>
+### Install Prometheus Stack
+We use the `kube-prometheus-stack` via Helm. This installs Prometheus, Grafana, and the Alertmanager.
+
+```bash title="Terminal"
+# 1. Add the Helm Repo
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+
+# 2. Install the Stack
+# We use a custom config file from CNPG docs to ensure compatibility
+helm upgrade --install \
+  -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/main/docs/src/samples/monitoring/kube-stack-config.yaml \
+  prometheus-community \
+  prometheus-community/kube-prometheus-stack -n prometheus --create-namespace
+```
+
+</Step>
+
+<Step>
+### Enable Metrics in Cluster
+Ensure your `postgres14-cluster.yaml` has the monitoring flag enabled. This exposes the metrics endpoint on port 9187.
+
+```yaml title="postgres14-cluster.yaml"
+spec:
+  monitoring:
+    enablePodMonitor: true # Automatically exposes metrics
+```
+
+</Step>
+
+<Step>
+### Create PodMonitor Resource
+The Prometheus Operator needs a `PodMonitor` definition to know *which* pods to scrape. Apply the following manifest:
+
+```yaml title="postgres14-podmonitoring.yaml"
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgres14-cluster
+  namespace: demo
+  labels:
+    # These labels ensure the Prometheus Operator finds this object
+    app.kubernetes.io/name: postgres14-cluster
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: postgres14-cluster
+  podMetricsEndpoints:
+  - port: metrics
+```
+
+Apply it:
+```bash
+kubectl apply -f postgres14-podmonitoring.yaml
+```
+
+</Step>
+
+<Step>
+### Verify Targets
+To confirm Prometheus is scraping your database:
+1. Port-forward the Prometheus UI:
+```bash title="Terminal"
+kubectl port-forward -n prometheus \
+    svc/prometheus-community-kube-prometheus 9090:9090
+```
+2. Open `http://localhost:9090`.
+3. Try to query anything like `cnpg_*` in the "Graph" tab.
+
+{/* image below */}
+
+<img src="/images/infra/kubernetes/prometheus-local-22df4784193c0aaaefbd8724229cad7b.png" alt="Prometheus queries" />
+</Step>
+</Steps>
+
